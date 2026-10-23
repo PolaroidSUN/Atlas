@@ -250,12 +250,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   pointer-events: all !important;
   transition: none !important;
 }
-/* Full-edge target/source hit zones are separated inward/outward, while the
-   centered edge renderer keeps every visible connection anchored centrally. */
+/* Connection hit zones stay in the middle of each side. The rest of the border
+   resizes the shape. Source sits just outside, target just inside. */
 .atlas-node .react-flow__handle.top-in, .atlas-node .react-flow__handle.bottom-in,
-.atlas-node .react-flow__handle.top-out, .atlas-node .react-flow__handle.bottom-out { left: 0 !important; margin-left: 0 !important; }
+.atlas-node .react-flow__handle.top-out, .atlas-node .react-flow__handle.bottom-out { left: 50% !important; margin-left: 0 !important; }
 .atlas-node .react-flow__handle.left-in, .atlas-node .react-flow__handle.right-in,
-.atlas-node .react-flow__handle.left-out, .atlas-node .react-flow__handle.right-out { top: 0 !important; margin-top: 0 !important; }
+.atlas-node .react-flow__handle.left-out, .atlas-node .react-flow__handle.right-out { top: 50% !important; margin-top: 0 !important; }
 .idea-node { display: flex; flex-direction: column; }
 .idea-node-head { height: 33px; flex: 0 0 33px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border-bottom: 1px solid var(--line); }
 .node-delete { width: 18px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
@@ -917,14 +917,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .atlas-node .react-flow__handle-bottom,
 .atlas-node .react-flow__handle-left,
 .atlas-node .react-flow__handle-right { z-index: var(--z-connection-hit); }
-.atlas-node .react-flow__handle.top-in { transform: translate(-50%, -50%); }
-.atlas-node .react-flow__handle.top-out { transform: translate(-50%, -50%); }
-.atlas-node .react-flow__handle.bottom-in { transform: translate(-50%, 50%); }
-.atlas-node .react-flow__handle.bottom-out { transform: translate(-50%, 50%); }
-.atlas-node .react-flow__handle.left-in { transform: translate(-50%, -50%); }
-.atlas-node .react-flow__handle.left-out { transform: translate(-50%, -50%); }
-.atlas-node .react-flow__handle.right-in { transform: translate(50%, -50%); }
-.atlas-node .react-flow__handle.right-out { transform: translate(50%, -50%); }
+/* Centering is set inline so a later transform cannot shove the port into a corner. */
 .canvas-stage .react-flow__edge-path { stroke: #91a99a; stroke-width: 2px; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Canvas table cells are native editable text controls. Selection, caret and colors remain available. */
@@ -1158,8 +1151,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav-link { gap: 8px; }
 .nav-emoji { display: none !important; }
 
-/* Flow-mode images are true floats, so surrounding paragraphs reflow as their
-   width/height changes. Margin-box/shape-margin maintain breathing room. */
+/* Flow-mode images are true floats. A traced polygon replaces the rectangle
+   once the subject contour is ready, so lines follow the picture instead of its box.
+   The float stays in the text layer: words wrap around it and are not painted underneath. */
+.idea-node-editor .card-image-node.flow-position,
+.idea-node-editor .card-image-node.flow-position.selected { position: relative !important; z-index: auto !important; }
 .idea-node-editor .card-image-node:not(.free-position).align-left {
   float: left !important; clear: none !important;
   margin: var(--card-image-flow-margin, 3px 5px 4px 0) !important;
@@ -1396,7 +1392,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   z-index:var(--z-image-preview);
   border:8px solid transparent;
   background:transparent;
-  pointer-events:auto;
+  pointer-events:none;
   cursor:grab;
   touch-action:none;
 }
@@ -1781,6 +1777,50 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .idea-node-editor .card-image-node.gesturing { transition: none !important; }
 
+/* Both-sides wrap painted by pretext. The source paragraph stays in the
+   document for editing; the visible words are these line slots. */
+.atlas-text-wrap {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+.atlas-text-wrap-line {
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  color: var(--ink);
+  pointer-events: auto;
+  cursor: text;
+  user-select: none;
+}
+.idea-node-editor .card-image-node.free-position { z-index: 8 !important; }
+.atlas-wrap-caret {
+  position: absolute;
+  width: 1px;
+  background: var(--ink);
+  pointer-events: none;
+}
+.idea-node-editor .atlas-wrap-source,
+.idea-node-editor .atlas-wrap-source * {
+  color: transparent !important;
+  caret-color: transparent !important;
+  user-select: none !important;
+  pointer-events: none !important;
+}
+.idea-node-editor .atlas-wrap-source::selection,
+.idea-node-editor .atlas-wrap-source *::selection {
+  background: transparent !important;
+}
+
 /* Atlas 1.7 Alpha — image-move containment.
    The Tiptap editor is the coordinate plane for free-positioned card images.
    Clip only at this inner plane (not the whole React Flow node), so the card's
@@ -1795,3 +1835,47 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   touch-action: none !important;
 }
 .idea-node-editor .card-image-node.gesturing { transition: none !important; }
+
+/* Both-sides wrap painted by pretext. The source paragraph stays in the
+   document for editing; the visible words are these line slots. */
+.atlas-text-wrap {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+.atlas-text-wrap-line {
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  color: var(--ink);
+  pointer-events: auto;
+  cursor: text;
+  user-select: none;
+}
+.idea-node-editor .card-image-node.free-position { z-index: 8 !important; }
+.atlas-wrap-caret {
+  position: absolute;
+  width: 1px;
+  background: var(--ink);
+  pointer-events: none;
+}
+.idea-node-editor .atlas-wrap-source,
+.idea-node-editor .atlas-wrap-source * {
+  color: transparent !important;
+  caret-color: transparent !important;
+  user-select: none !important;
+  pointer-events: none !important;
+}
+.idea-node-editor .atlas-wrap-source::selection,
+.idea-node-editor .atlas-wrap-source *::selection {
+  background: transparent !important;
+}

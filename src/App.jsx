@@ -37,7 +37,9 @@ import {
 } from 'lucide-react'
 import { normalizeCardImageMode, resizeCardImageFrame } from './features/canvas/card-image-model.js'
 import { constrainCardImagePosition } from './features/canvas/card-image-gesture.js'
-import { findCardImagePosition, placeCardImageInTextFlow, settleCardImageInTextFlow } from './features/canvas/card-image-flow.js'
+import { applyWrappedCardText, cardTextWrapExtension } from './features/canvas/card-text-wrap.js'
+import { findCardImagePosition } from './features/canvas/card-image-flow.js'
+import { buildCardImageContour } from './features/canvas/card-image-contour.js'
 import { CreateDialog, InsertDocumentDialog, TableDialog } from './features/files/FileDialogs.jsx'
 
 const STORAGE_KEY = 'atlas-alpha-workspace-v1'
@@ -409,21 +411,22 @@ function ConnectionPorts() {
     return () => { cancelAnimationFrame(frame); observer?.disconnect() }
   }, [nodeId, zoom, updateNodeInternals])
 
-  // Connection targets cover each complete side, not just a tiny center dot.
-  // Target zones sit just inside the border and source zones just outside it;
-  // the custom edge renderer snaps both visible endpoints to the exact center.
+  // Connection targets stay in the middle of each side. The edges and corners
+  // belong to the resizer, so dragging a border stretches the shape instead of
+  // starting a link. Source zones sit just outside the border, targets just inside.
   const depth = 18 / safeZoom
+  const span = 36 / safeZoom
   const common = {
     opacity: 0, pointerEvents: 'all', background: 'transparent', border: 0,
-    borderColor: 'transparent', boxShadow: 'none', transform: 'none',
+    borderColor: 'transparent', boxShadow: 'none',
   }
   const handleStyle = (side, direction) => {
     const style = { ...common }
     const outside = direction > 0
-    if (side === 'top') Object.assign(style, { left: '0px', width: '100%', height: `${depth}px`, top: outside ? `${-depth}px` : '0px' })
-    if (side === 'bottom') Object.assign(style, { left: '0px', width: '100%', height: `${depth}px`, bottom: outside ? `${-depth}px` : '0px' })
-    if (side === 'left') Object.assign(style, { top: '0px', width: `${depth}px`, height: '100%', left: outside ? `${-depth}px` : '0px' })
-    if (side === 'right') Object.assign(style, { top: '0px', width: `${depth}px`, height: '100%', right: outside ? `${-depth}px` : '0px' })
+    if (side === 'top') Object.assign(style, { left: '50%', width: `${span}px`, height: `${depth}px`, top: outside ? `${-depth}px` : '0px', transform: 'translateX(-50%)' })
+    if (side === 'bottom') Object.assign(style, { left: '50%', width: `${span}px`, height: `${depth}px`, bottom: outside ? `${-depth}px` : '0px', transform: 'translateX(-50%)' })
+    if (side === 'left') Object.assign(style, { top: '50%', width: `${depth}px`, height: `${span}px`, left: outside ? `${-depth}px` : '0px', transform: 'translateY(-50%)' })
+    if (side === 'right') Object.assign(style, { top: '50%', width: `${depth}px`, height: `${span}px`, right: outside ? `${-depth}px` : '0px', transform: 'translateY(-50%)' })
     return style
   }
   const visualSize = 14 / safeZoom
@@ -522,9 +525,9 @@ function getCardVisibleBounds(editor) {
   return (body || view?.dom)?.getBoundingClientRect?.() || null
 }
 
-// Free-positioned images use editor-local absolute coordinates. Reserve text
-// block margins only where those frames intersect; flow images use real CSS
-// floats and are laid out directly by ProseMirror/the browser.
+// Free-positioned images use editor-local absolute coordinates. Pretext then
+// fills every free slot on each line, including both sides of an image that
+// sits in the middle. A CSS float can only open one edge.
 function applyCardImageTextFlow(editor, zoom = 1) {
   const safeZoom = Math.max(0.05, Number(zoom) || 1)
   const root = editor?.view?.dom
@@ -535,8 +538,7 @@ function applyCardImageTextFlow(editor, zoom = 1) {
   // height, which can trigger a feedback loop that keeps growing the card.
   root.style.minHeight = '0px'
   const editorRect = root.getBoundingClientRect()
-  const editorWidth = Math.max(1, root.clientWidth || editorRect.width / safeZoom)
-  const images = [...root.querySelectorAll('.card-image-node[data-position-mode="free"]')]
+  const images = [...root.querySelectorAll('.card-image-node')]
   const blocks = [...root.querySelectorAll('p,h1,h2,h3,blockquote,pre,ul,ol,table')]
     .filter(block => !block.closest('.card-image-node'))
   for (const block of blocks) {
@@ -548,35 +550,22 @@ function applyCardImageTextFlow(editor, zoom = 1) {
     block.style.marginRight = block.getAttribute('data-atlas-base-margin-right') || ''
   }
 
-  const leftReserve = new Map()
-  const rightReserve = new Map()
   let imageBottom = 0
   for (const image of images) {
     const rect = image.getBoundingClientRect()
     if (!(rect.width > 0 && rect.height > 0)) continue
-    const localLeft = Math.max(0, (rect.left - editorRect.left) / safeZoom)
-    const localRight = Math.min(editorWidth, (rect.right - editorRect.left) / safeZoom)
-    const localTop = Math.max(0, (rect.top - editorRect.top) / safeZoom)
     const localBottom = Math.max(0, (rect.bottom - editorRect.top) / safeZoom)
-    const wrapTop = rect.top - 6 * safeZoom
-    const wrapBottom = rect.bottom + 8 * safeZoom
     imageBottom = Math.max(imageBottom, localBottom + 18)
-    const side = (localLeft + localRight) / 2 < editorWidth / 2 ? 'left' : 'right'
-    blocks.forEach(block => {
-      const blockRect = block.getBoundingClientRect()
-      if (blockRect.bottom <= wrapTop || blockRect.top >= wrapBottom) return
-      const reserve = side === 'left' ? localRight + 12 : Math.max(0, editorWidth - localLeft) + 12
-      const map = side === 'left' ? leftReserve : rightReserve
-      map.set(block, Math.max(map.get(block) || 0, reserve))
-    })
   }
-  for (const [block, amount] of leftReserve) block.style.marginLeft = `${amount}px`
-  for (const [block, amount] of rightReserve) block.style.marginRight = `${amount}px`
+  // Pretext fills every free slot on a line, so an image in the center has
+  // text on both sides. A CSS float can only open the left or the right edge.
+  applyWrappedCardText(editor, zoom)
 
   // Absolute image frames do not participate in document flow, so calculate
   // their lower edge explicitly and let the editor grow only to natural text /
   // image content, never to the card's previous body height.
   const naturalContentBottom = [...root.children].reduce((bottom, child) => {
+    if (child.classList?.contains('atlas-text-wrap')) return bottom
     const rect = child.getBoundingClientRect()
     return Math.max(bottom, Math.max(0, (rect.bottom - editorRect.top) / safeZoom))
   }, root.scrollHeight || 0)
@@ -638,9 +627,10 @@ function clampAtlas(value, min, max) {
 // Return the nearest edge (or corner) to the pointer. Ctrl+drag transforms the
 // image frame; Alt+drag crops the image like OBS. No mode buttons are required.
 function imageEdgeFromPoint(event, rect) {
-  // A generous edge hit-zone is intentional: the painted border is small, but
-  // the interaction area should be easy to catch at common desktop zoom levels.
-  const pad = Math.max(12, Math.min(22, Math.min(rect.width, rect.height) * 0.18))
+  // The canvas zoom shrinks the picture on screen. The edge band stays a
+  // fraction of that box so the middle can still be dragged.
+  const smaller = Math.min(rect.width, rect.height)
+  const pad = Math.min(16, smaller * 0.22)
   const distances = {
     w: Math.abs(event.clientX - rect.left),
     e: Math.abs(rect.right - event.clientX),
@@ -669,8 +659,10 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
   const wrapperRef = useRef(null)
   const gestureRef = useRef(null)
   const listenersRef = useRef(null)
+  const startMoveRef = useRef(null)
   const [imageSelected, setImageSelected] = useState(false)
   const [imageHovered, setImageHovered] = useState(false)
+  const [contour, setContour] = useState(null)
   const [contextPosition, setContextPosition] = useState(null)
   const closeContextMenu = useCallback(() => setContextPosition(null), [])
   const safeZoom = Math.max(Number(zoom) || 1, 0.05)
@@ -733,7 +725,54 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
   }
   useEffect(() => () => { if (!gestureRef.current) removeGestureListeners() }, [])
 
-  useEffect(() => { scheduleCardImageTextFlow(editor, zoom) }, [editor, zoom, widthPct, frameHeight, align])
+  useEffect(() => { scheduleCardImageTextFlow(editor, zoom) }, [editor, zoom, widthPct, frameHeight, align, node.attrs.positionX, node.attrs.positionY])
+
+  useEffect(() => {
+    const host = wrapperRef.current
+    if (!node.attrs.src) {
+      if (host) host.atlasContourRows = null
+      setContour(null)
+      return undefined
+    }
+    let cancelled = false
+    const frame = requestAnimationFrame(() => {
+      const bounds = wrapperRef.current?.getBoundingClientRect()
+      const aspect = bounds && bounds.width > 2 ? bounds.height / bounds.width : visualHeight / 160
+      buildCardImageContour(node.attrs.src, {
+        cropLeft, cropRight, cropTop, cropBottom, objectFit, aspect,
+      }).then(result => {
+        if (cancelled) return
+        const live = wrapperRef.current
+        if (live) live.atlasContourRows = result?.rows || null
+        setContour(result ? { polygon: result.polygon, maskUrl: result.maskUrl } : null)
+        scheduleCardImageTextFlow(editor, zoom)
+      })
+    })
+    return () => { cancelled = true; cancelAnimationFrame(frame) }
+  }, [node.attrs.src, cropLeft, cropRight, cropTop, cropBottom, objectFit, visualHeight, visualWidthPct, editor, zoom])
+
+  useEffect(() => {
+    const root = editor?.view?.dom
+    if (!root) return undefined
+    // Text lines can paint across the picture. A click in that overlap still
+    // belongs to the image, so the middle of the frame can move and resize.
+    const onPointerDown = event => {
+      if (event.button !== 0) return
+      const wrapper = wrapperRef.current
+      if (!wrapper) return
+      const rect = wrapper.getBoundingClientRect()
+      const x = event.clientX
+      const y = event.clientY
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return
+      // The node's own handler already starts the gesture. A text line drawn
+      // across the picture must not swallow the click.
+      if (wrapper.contains(event.target)) return
+      event.stopPropagation()
+      startMoveRef.current?.(event)
+    }
+    root.addEventListener('pointerdown', onPointerDown, true)
+    return () => root.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
 
   const startGesture = (event, mode, edge = 'se') => {
     if (event.button !== 0) return
@@ -793,56 +832,33 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
       if (!element) return
       element.classList.add('selected', 'gesturing')
 
-      // IMPORTANT: for ordinary movement, use the proven Atlas 1.1 strategy:
-      // reposition the actual ProseMirror image node every frame-throttled step.
-      // It stays a CSS float in document flow, so text rewraps while the pointer
-      // moves instead of being painted above the text on an absolute overlay.
-      if (current.mode === 'move') {
-        let nextX = current.startX + dx / current.rootWidth * 100
-        let nextY = current.startY + dy / safeZoom
-        const bounded = constrainCardImagePosition(nextX, nextY, current.startWidthPct)
-        nextX = bounded.x
-        nextY = bounded.y
-        const now = performance.now()
-        if (!current.lastFlowCommit || now - current.lastFlowCommit >= 20) {
-          const root = rootEditor()
-          const rootRect = root?.getBoundingClientRect()
-          const editorWidth = Math.max(1, root?.clientWidth || current.rootWidth / safeZoom)
-          const desiredTopScreen = rootRect ? rootRect.top + nextY * safeZoom : e.clientY
-          const desiredLeftCss = nextX / 100 * editorWidth
-          const imageWidthCss = current.startWidthPct / 100 * editorWidth
-          const placed = placeCardImageInTextFlow(
-            editor, current.imageId || node.attrs.imageId || null, desiredTopScreen, desiredLeftCss,
-            imageWidthCss, safeZoom, (() => { try { return typeof getPos === 'function' ? getPos() : null } catch { return null } })(),
-          )
-          current.lastFlowCommit = now
-          const live = findLiveWrapper()
-          if (live) {
-            live.classList.add('gesturing', 'selected')
-            live.dataset.positionMode = 'flow'
-          }
-          if (!placed) scheduleCardImageTextFlow(editor, zoom)
-        }
-        return
-      }
-
-      // Resize and crop have a temporary visual preview; normal move deliberately
-      // does not use this absolute preview because that breaks true text wrapping.
-      if (!current.previewStarted) {
-        current.previewStarted = true
-        element.classList.remove('free-position')
-        element.classList.add('flow-position')
+      // Absolute placement lets the picture sit in the middle. The wrap pass
+      // then fills the free slots on both sides with pretext, which a float cannot.
+      const paintFlowWrap = (x, y, width, height) => {
+        const bounded = constrainCardImagePosition(x, y, width)
+        element.classList.remove('flow-position', 'align-left', 'align-right', 'align-center')
+        element.classList.add('free-position', 'gesturing', 'selected')
         element.dataset.positionMode = 'free'
         element.style.setProperty('position', 'absolute', 'important')
         element.style.setProperty('float', 'none', 'important')
         element.style.setProperty('margin', '0', 'important')
-        element.style.left = `${current.startX}%`
-        element.style.top = `${current.startY}px`
-        element.style.width = `${current.startWidthPct}%`
-        element.style.height = `${current.startHeight}px`
-        element.style.transform = 'translate(0, 0)'
-        element.style.zIndex = 'var(--z-drag-preview)'
+        element.style.setProperty('aspect-ratio', 'auto', 'important')
+        element.style.setProperty('z-index', 'var(--z-image-preview)', 'important')
+        element.style.left = `${bounded.x}%`
+        element.style.top = `${bounded.y}px`
+        element.style.width = `${width}%`
+        element.style.height = `${height}px`
+        scheduleCardImageTextFlow(editor, zoom)
       }
+      if (current.mode === 'move') {
+        let nextX = current.startX + dx / current.rootWidth * 100
+        let nextY = current.startY + dy / safeZoom
+        const bounded = constrainCardImagePosition(nextX, nextY, current.startWidthPct)
+        paintFlowWrap(bounded.x, bounded.y, current.startWidthPct, current.startHeight)
+        return
+      }
+
+      // Resize and crop preview keeps the same float, so the text keeps wrapping.
       let nextX = current.startX
       let nextY = current.startY
       let nextWidth = current.startWidthPct
@@ -868,11 +884,7 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
         const previewImage = element.querySelector('img')
         if (previewImage) Object.assign(previewImage.style, cropImageStyle(current.previewCropLeft, current.previewCropTop, current.previewCropRight, current.previewCropBottom, current.objectFit))
       }
-      element.style.left = `${nextX}%`
-      element.style.top = `${nextY}px`
-      element.style.width = `${nextWidth}%`
-      element.style.height = `${nextHeight}px`
-      element.dataset.positionMode = 'free'
+      paintFlowWrap(nextX, nextY, nextWidth, nextHeight)
       const previewImage = element.querySelector('img')
       if (previewImage && current.mode === 'resize') previewImage.style.objectFit = 'fill'
       scheduleCardImageTextFlow(editor, zoom)
@@ -922,15 +934,13 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
           ...(freePosition ? { positionMode: 'free', positionX: Math.round(nextX * 100) / 100, positionY: Math.round(nextY) } : {}),
         }
       } else if (current.mode === 'move') {
-        const center = nextX + nextWidth / 2
-        nextAttrs = { align: center < 36 ? 'left' : center > 64 ? 'right' : 'center', layoutPreset: center < 36 ? 'left' : center > 64 ? 'right' : 'center', positionMode: 'flow', positionX: null, positionY: null, widthPct: Math.round(current.sourceWidthPct * 100) / 100, frameHeight: Math.round(current.sourceHeight) }
+        const bounded = constrainCardImagePosition(nextX, nextY, current.startWidthPct)
+        nextAttrs = { positionMode: 'free', layoutPreset: 'free', positionX: Math.round(bounded.x * 100) / 100, positionY: Math.round(bounded.y), xPercent: Math.round(nextX * 100) / 100, offsetY: Math.round(bounded.y), widthPct: Math.round(current.sourceWidthPct * 100) / 100, frameHeight: Math.round(current.sourceHeight) }
       } else {
         const visibleX = Math.max(0.1, (100 - current.cropLeft - current.cropRight) / 100)
         const visibleY = Math.max(0.1, (100 - current.cropTop - current.cropBottom) / 100)
-        const alignFromPreview = current.edge.includes('w') ? 'right' : 'left'
-        const resizeMode = positionMode
-        const resizedAlign = current.edge.includes('w') ? 'right' : current.edge.includes('e') ? 'left' : align
-        nextAttrs = { align: resizedAlign, layoutPreset: resizeMode === 'free' ? 'free' : resizedAlign, positionMode: resizeMode, positionX: resizeMode === 'free' ? Math.round(nextX * 100) / 100 : null, positionY: resizeMode === 'free' ? Math.round(nextY) : null, xPercent: Math.round(nextX * 100) / 100, offsetY: resizeMode === 'flow' && current.edge.includes('n') ? Math.max(0, Math.round((Number(node.attrs.offsetY) || 0) + verticalDelta)) : (Number(node.attrs.offsetY) || 0), widthPct: Math.round((nextWidth / visibleX) * 100) / 100, frameHeight: Math.round(nextHeight / visibleY), objectFit: 'fill' }
+        const bounded = constrainCardImagePosition(nextX, nextY, nextWidth)
+        nextAttrs = { align, layoutPreset: 'free', positionMode: 'free', positionX: Math.round(bounded.x * 100) / 100, positionY: Math.round(bounded.y), xPercent: Math.round(nextX * 100) / 100, offsetY: Math.round(bounded.y), widthPct: Math.round((nextWidth / visibleX) * 100) / 100, frameHeight: Math.round(nextHeight / visibleY), objectFit: 'fill' }
       }
 
       if (current.mode !== 'move') {
@@ -942,46 +952,9 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
           else currentImage.removeAttribute('style')
         }
       }
-      element.dataset.positionMode = current.mode === 'move' ? 'flow' : (nextAttrs?.positionMode || 'flow')
+      element.dataset.positionMode = nextAttrs?.positionMode || 'free'
 
-      if (current.moved) {
-        if (current.mode === 'move') {
-          // Port of the verified Atlas 1.1 movement mechanic: on drop, move the
-          // image node to the text block at this Y coordinate and restore it as
-          // a real CSS float. This makes text reflow around the image instead
-          // of leaving the image on a higher absolute layer above the text.
-          const root = rootEditor()
-          const rootRect = root?.getBoundingClientRect()
-          const desiredTopScreen = rootRect ? rootRect.top + Math.max(0, nextY) * safeZoom : e.clientY
-          const desiredLeftCss = Math.max(0, nextX) / 100 * Math.max(1, root?.clientWidth || current.rootWidth / safeZoom)
-          const imageWidthCss = Math.max(1, current.startWidthPct / 100 * Math.max(1, root?.clientWidth || current.rootWidth / safeZoom))
-          const imageId = current.imageId || node.attrs.imageId || null
-          const fallbackPos = (() => { try { return typeof getPos === 'function' ? getPos() : null } catch { return null } })()
-          // Finalize by inserting the float at the text position nearest the
-          // drop point. If needed, split that paragraph so text before the
-          // image stays above it, while following text flows beside/below it.
-          const settled = settleCardImageInTextFlow(
-            editor, imageId, desiredTopScreen, desiredLeftCss, imageWidthCss, safeZoom, fallbackPos,
-          )
-          if (!settled) {
-            const placed = placeCardImageInTextFlow(editor, imageId, desiredTopScreen, desiredLeftCss, imageWidthCss, safeZoom, fallbackPos)
-            if (!placed) {
-              const maxX = Math.max(0, 100 - current.startWidthPct)
-              const boundedX = Math.max(0, Math.min(maxX, nextX))
-              updateAttributes({
-                align: boundedX + current.startWidthPct / 2 < 50 ? 'left' : 'right',
-                layoutPreset: boundedX + current.startWidthPct / 2 < 50 ? 'left' : 'right',
-                positionMode: 'flow', positionX: null, positionY: null,
-                xPercent: Math.round(boundedX * 100) / 100, offsetY: 0,
-                widthPct: Math.round(current.sourceWidthPct * 100) / 100,
-                frameHeight: Math.round(current.sourceHeight),
-              })
-            }
-          }
-        } else {
-          updateAttributes(nextAttrs)
-        }
-      }
+      if (current.moved && nextAttrs) updateAttributes(nextAttrs)
       requestAnimationFrame(() => {
         const position = findCardImagePosition(editor, current.imageId || node.attrs.imageId || null, (() => { try { return typeof getPos === 'function' ? getPos() : null } catch { return null } })())
         if (Number.isInteger(position) && editor.state.doc.nodeAt(position)?.type.name === 'image') editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, position)))
@@ -996,16 +969,14 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
       const element = findLiveWrapper()
       if (!element) return
       element.classList.remove('gesturing')
-      if (current.mode !== 'move') {
-        if (current.originalStyle) element.setAttribute('style', current.originalStyle)
-        else element.removeAttribute('style')
-        const currentImage = element.querySelector('img')
-        if (currentImage) {
-          if (current.originalImageStyle) currentImage.setAttribute('style', current.originalImageStyle)
-          else currentImage.removeAttribute('style')
-        }
-        element.dataset.positionMode = positionMode
+      if (current.originalStyle) element.setAttribute('style', current.originalStyle)
+      else element.removeAttribute('style')
+      const currentImage = element.querySelector('img')
+      if (currentImage) {
+        if (current.originalImageStyle) currentImage.setAttribute('style', current.originalImageStyle)
+        else currentImage.removeAttribute('style')
       }
+      element.dataset.positionMode = positionMode
       scheduleCardImageTextFlow(editor, zoom)
     }
     listenersRef.current = { move, end, cancel }
@@ -1027,6 +998,7 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
     if (edge) { startGesture(event, 'resize', edge); return }
     startGesture(event, 'move')
   }
+  startMoveRef.current = startMove
   const original = () => {
     const editorWidth = (rootEditor()?.getBoundingClientRect().width || 1) / safeZoom
     const originalPct = Math.max(8, Math.min(96, (naturalWidth / editorWidth) * 100))
@@ -1045,37 +1017,21 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
     else Object.assign(style, { cursor: edge === 'nw' || edge === 'se' ? 'nwse-resize' : 'nesw-resize' })
     return style
   }
-  const flowOffsetY = Math.max(0, Number(node.attrs.offsetY) || 0)
-  const storedFlowX = node.attrs.xPercent !== null && node.attrs.xPercent !== undefined && Number.isFinite(Number(node.attrs.xPercent))
-    ? Number(node.attrs.xPercent)
-    : (align === 'right' ? Math.max(0, 100 - visualWidthPct) : 0)
-  const flowXPercent = Math.max(0, Math.min(Math.max(0, 100 - visualWidthPct), storedFlowX))
-  const flowRightGap = `calc(100% - ${flowXPercent}% - ${visualWidthPct}%)`
-  const flowMargin = align === 'left'
-    ? `${flowOffsetY + 1}px 4px 1px ${flowXPercent}%`
-    : align === 'right'
-      ? `${flowOffsetY + 1}px ${flowRightGap} 1px 4px`
-      : `${flowOffsetY + 2}px auto 1px`
-  const floatStyle = {
-    float: align === 'center' ? 'none' : align,
-    margin: flowMargin,
-    '--card-image-flow-margin': flowMargin,
-    // The 1.7.2 CSS intentionally overrides margin-top while dragging so the
-    // live text wrap remains stable. Feed the actual persisted vertical offset
-    // into that override; otherwise the CSS pins every flow image at 1px and
-    // silently discards vertical drag movement.
-    '--card-image-flow-top': `${flowOffsetY + (align === 'center' ? 2 : 1)}px`,
-    clear: align === 'center' ? 'both' : 'none',
-  }
+  const placedX = freePosition
+    ? Math.max(0, Number(node.attrs.positionX) || 0)
+    : (node.attrs.xPercent === null || node.attrs.xPercent === undefined
+      ? (align === 'right' ? Math.max(0, 100 - visualWidthPct) : 0)
+      : Math.max(0, Number(node.attrs.xPercent) || 0))
+  const placedY = Math.max(0, Number(freePosition ? node.attrs.positionY : node.attrs.offsetY) || 0)
 
   return <NodeViewWrapper as="div" ref={wrapperRef}
-    className={`card-image-node nodrag align-${align} ${freePosition ? 'free-position' : 'flow-position'} ${selected || imageSelected ? 'selected' : ''} ${imageHovered ? 'is-hovered' : ''}`}
+    className={`card-image-node nodrag align-${align} free-position ${selected || imageSelected ? 'selected' : ''} ${imageHovered ? 'is-hovered' : ''}`}
     data-image-id={node.attrs.imageId || undefined}
     contentEditable={false} draggable="false"
-    data-position-mode={positionMode}
+    data-position-mode="free"
     onMouseEnter={() => setImageHovered(true)} onMouseLeave={() => setImageHovered(false)}
     onPointerEnter={() => setImageHovered(true)} onPointerLeave={() => setImageHovered(false)}
-    style={{ '--canvas-zoom': zoom, ...(freePosition ? { float: 'none', margin: 0, position: 'absolute', left: `${Math.max(0, Number(node.attrs.positionX) || 0)}%`, top: `${Math.max(0, Number(node.attrs.positionY) || 0)}px`, zIndex: 'var(--z-image-preview)' } : { ...floatStyle, position: 'relative' }), width: `${visualWidthPct}%`, height: `${visualHeight}px`, maxWidth: '96%', aspectRatio: `${naturalWidth * cropFactorX} / ${naturalHeight * cropFactorY}` }}
+    style={{ '--canvas-zoom': zoom, '--atlas-image-grip-hit': `${Math.max(8, Math.min(22 / safeZoom, visualHeight * 0.22))}px`, '--card-image-flow-margin': '0', '--card-image-flow-top': `${placedY + 1}px`, position: 'absolute', float: 'none', margin: 0, left: `${placedX}%`, top: `${placedY}px`, zIndex: 8, width: `${visualWidthPct}%`, height: `${visualHeight}px`, maxWidth: '96%', aspectRatio: 'auto' }}
     onMouseDown={event => { if (event.button === 0) { event.preventDefault(); event.stopPropagation() } }}
     onPointerDown={startMove}>
     {contextPosition && <ImageContextMenu position={contextPosition} onClose={closeContextMenu} actions={[
@@ -1098,7 +1054,7 @@ function CardImageNodeView({ node, updateAttributes, selected, deleteNode, edito
       } }] : []),
       { separator: true }, { label: 'Excluir imagem', icon: Trash2, danger: true, onSelect: deleteNode },
     ]} />}
-    <div className="card-image-viewport" style={{ position: 'absolute', inset: 0, overflow: 'hidden', borderRadius: 'inherit', pointerEvents: 'none' }}>
+    <div className="card-image-viewport" style={{ position: 'absolute', inset: 0, overflow: 'hidden', borderRadius: 'inherit', pointerEvents: 'none', ...(contour?.maskUrl ? { maskImage: `url("${contour.maskUrl}")`, WebkitMaskImage: `url("${contour.maskUrl}")`, maskSize: '100% 100%', WebkitMaskSize: '100% 100%', maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat' } : {}) }}>
       <img src={node.attrs.src} alt={node.attrs.alt || 'Imagem no cartão'} draggable="false"
         style={cropImageStyle(cropLeft, cropTop, cropRight, cropBottom, objectFit)} />
     </div>
@@ -1139,24 +1095,13 @@ const AtlasCardImage = Image.extend({
     const align = attrs['data-card-align'] || 'left'
     const widthPct = Number(attrs['data-width-pct']) || 42
     const height = Number(attrs['data-frame-height']) || 100
-    const cropLeft = Math.max(0, Number(attrs['data-crop-left']) || 0)
-    const cropRight = Math.max(0, Number(attrs['data-crop-right']) || 0)
-    const visualWidthPct = widthPct * Math.max(0.1, (100 - cropLeft - cropRight) / 100)
     const freePosition = attrs['data-position-mode'] === 'free' || attrs['data-free-position'] === 'true'
     const positionX = Number(attrs['data-position-x']) || 0
     const positionY = Number(attrs['data-position-y']) || 0
     const offsetY = Math.max(0, Number(attrs['data-flow-offset-y']) || 0)
-    const flowX = attrs['data-flow-x-percent'] !== undefined
-      ? Math.max(0, Math.min(100 - visualWidthPct, Number(attrs['data-flow-x-percent']) || 0))
-      : (align === 'right' ? Math.max(0, 100 - visualWidthPct) : 0)
-    const flowMargin = align === 'left'
-      ? `${offsetY + 3}px 5px 4px ${flowX}%`
-      : align === 'right'
-        ? `${offsetY + 3}px calc(100% - ${flowX}% - ${visualWidthPct}%) 4px 5px`
-        : `${offsetY + 4}px auto 4px`
-    attrs.style = freePosition
-      ? `position:absolute;float:none;left:${positionX}%;top:${positionY}px;width:${widthPct}%;height:${height}px;max-width:96%;object-fit:${attrs['data-object-fit'] || 'contain'};margin:0;`
-      : `float:${align === 'center' ? 'none' : align};width:${widthPct}%;height:${height}px;max-width:96%;object-fit:${attrs['data-object-fit'] || 'contain'};margin:${flowMargin};clear:${align === 'center' ? 'both' : 'none'};`
+    const placedX = freePosition ? positionX : (attrs['data-flow-x-percent'] != null && attrs['data-flow-x-percent'] !== '' ? Number(attrs['data-flow-x-percent']) : (align === 'right' ? Math.max(0, 100 - widthPct) : 0))
+    const placedY = freePosition ? positionY : offsetY
+    attrs.style = `position:absolute;float:none;margin:0;left:${placedX}%;top:${placedY}px;width:${widthPct}%;height:${height}px;max-width:96%;object-fit:${attrs['data-object-fit'] || 'contain'};`
     return ['img', attrs]
   },
   addNodeView() { return ReactNodeViewRenderer(CardImageNodeView) },
@@ -1193,7 +1138,7 @@ function IdeaNode({ id, data, selected }) {
       Underline, ...SharedTextExtensions, Placeholder.configure({ placeholder: 'Escreva uma ideia…' }),
       TaskList, TaskItem.configure({ nested: true }),
       Table.configure({ resizable: true }), TableRow, TableHeader, TableCell,
-      AtlasCardImage,
+      AtlasCardImage, cardTextWrapExtension,
     ],
     content: initialContent.current,
     immediatelyRender: true,
