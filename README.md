@@ -1,11 +1,11 @@
 # Atlas
 
-Projeto Atlas — versão **1.7.5 Alpha**.
+Repositório do projeto Atlas.
 
-Esta versão será disponibilizada como arquivo-fonte compactado `Atlas-1.7.5-Alpha-connector-image-table.zip` na raiz deste repositório.
+## Versão solicitada
 
-## Desenvolvimento
+**Atlas 1.7.5 Alpha** (`Atlas-1.7.5-Alpha-connector-image-table.zip`).
 
-Versão-alvo: 1.7.5 Alpha, conforme solicitada.
+O repositório foi inicializado, mas o ZIP binário ainda não foi enviado. A integração de GitHub disponível nesta conversa permite criar e editar arquivos de texto e objetos Git, mas não transfere diretamente o arquivo local compactado como anexo binário. Não considerar esta versão publicada até o arquivo-fonte aparecer no repositório.
 
-> Nota: esta é uma versão Alpha. O pacote contém o código-fonte e scripts de teste; não é um instalador `.exe` compilado.
+Esta é uma versão Alpha, não um instalador `.exe` compilado.
