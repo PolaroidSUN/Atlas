@@ -8,14 +8,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8')
 const css = await readFile(path.join(root, 'src/styles-redesign.css'), 'utf8')
 
-test('image movement repositions the real text-flow node during pointermove', () => {
+test('image movement can leave the edge and sit in the middle of the text', () => {
   const moveStart = app.indexOf('const move = e => {', app.indexOf('function CardImageNodeView'))
   const moveEnd = app.indexOf('const end = e => {', moveStart)
   const pointerMoveBody = app.slice(moveStart, moveEnd)
-  assert.match(pointerMoveBody, /if \(current\.mode === 'move'\)/)
-  assert.match(pointerMoveBody, /placeCardImageInTextFlow\(/)
-  assert.match(pointerMoveBody, /current\.lastFlowCommit/)
-  assert.doesNotMatch(pointerMoveBody.slice(0, pointerMoveBody.indexOf('// Resize and crop')), /position', 'absolute'/)
+  const moveBranch = pointerMoveBody.slice(pointerMoveBody.indexOf("if (current.mode === 'move')"), pointerMoveBody.indexOf('// Resize and crop'))
+  assert.match(moveBranch, /constrainCardImagePosition\(/)
+  assert.match(moveBranch, /paintFlowWrap\(/)
+  assert.match(pointerMoveBody, /dataset\.positionMode = 'free'/)
+  assert.match(pointerMoveBody, /position', 'absolute'/)
+  assert.match(app, /applyWrappedCardText\(/)
+  assert.doesNotMatch(moveBranch, /placeCardImageInTextFlow\(/)
 })
 
 test('Ctrl moves, edge drag resizes, and Alt edge drag crops', () => {
@@ -45,6 +48,6 @@ test('resizing a flow image preserves its adjusted horizontal anchor', () => {
 
 
 test('vertical offset is connected to the CSS variable that overrides margin-top', () => {
-  assert.match(app, /'--card-image-flow-top': `\$\{flowOffsetY \+ \(align === 'center' \? 2 : 1\)\}px`/)
+  assert.match(app, /'--card-image-flow-top': `\$\{placedY \+ 1\}px`/)
   assert.match(css, /margin-top: calc\(var\(--card-image-flow-top, 1px\)\) !important/)
 })

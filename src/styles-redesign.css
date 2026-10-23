@@ -498,10 +498,10 @@ button { -webkit-tap-highlight-color: transparent; }
   pointer-events: none;
 }
 .card-image-resize-grip:hover::after { transform: translate(-50%, -50%) scale(1.15); }
-/* Wider connection hit areas make links forgiving; visible ports still indicate the center. */
+/* The connection target is only the middle of each side. Do not stretch it
+   along the border: those edges resize the node. */
 .atlas-node .react-flow__handle.port {
-  width: calc(20px / var(--canvas-zoom, 1)) !important;
-  height: calc(20px / var(--canvas-zoom, 1)) !important;
+  z-index: var(--z-connection-hit) !important;
 }
 @media (prefers-reduced-motion: reduce) {
   .idea-node-editor > .card-image-node,
